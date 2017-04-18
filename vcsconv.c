@@ -2,7 +2,7 @@
  * PNG conversion tool for VCS.
  *
  * compile with, $CC being either gcc or clang:
- *   $CC -std=c99 -fno-strict-aliasing -lm -o vcsconv vcsconv.c
+ *   $CC -std=c99 -fno-strict-aliasing vcsconv.c -lm -o vcsconv
  */
 
 #define _POSIX_C_SOURCE 200809L
