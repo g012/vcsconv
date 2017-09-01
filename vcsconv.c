@@ -12,9 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <inttypes.h>
 #include <libgen.h>
 #include <getopt.h>
+#include <unistd.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -44,7 +46,9 @@ static void print_usage(FILE *stream, int exit_code)
         "  authpalette      generate a palette for authoring software\n"
         "  linecol          generate a table containing the first color of each line\n"
         "  playfield        convert pixels to playfield tables\n"
+        "  scramble         reorder ramdomly a table\n"
         "  sprite           convert pixels to sprite tables\n"
+        "  update           scan a file for vcsconv tags and update data in it\n"
     );
     exit(exit_code);
 }
@@ -438,6 +442,7 @@ static void print_usage_playfield(FILE *stream, int exit_code)
     fprintf(stream, "Usage: %s playfield options <png>\n", program_name);
     fprintf(stream,
         USAGE_HELP USAGE_OUTPUT USAGE_FORMAT USAGE_FIELD USAGE_DATA
+        "  -r, --reverse            switch playfield bits\n"
         "  -s, --select 012345      output only set PF, eg. 012 outputs only the left half\n"
         USAGE_X0 USAGE_Y0 USAGE_X1 USAGE_Y1 USAGE_XI USAGE_YI
     );
@@ -448,6 +453,7 @@ static void cmd_playfield(int argc, char **argv)
     const char *const short_options = "ho:f:n:s:d";
     const struct option long_options[] = {
         OPT_HELP, OPT_OUTPUT, OPT_FORMAT, OPT_FIELD, OPT_DATA,
+        { "reverse", no_argument, 0, 'r' },
         { "select", required_argument, 0, 's' },
         OPT_X0, OPT_Y0, OPT_X1, OPT_Y1, OPT_XI, OPT_YI,
         { 0, 0, 0, 0 },
@@ -456,6 +462,7 @@ static void cmd_playfield(int argc, char **argv)
     format_t output_format = FMT_AUTO;
     char *field_name = 0;
     int x0 = 0, y0 = 0, x1 = -1, y1 = -1, xi = 1, yi = 1;
+    int reverse = 0;
     int pfmask = 0x3F;
     char *pfmask_str = 0;
     for (;;)
@@ -466,6 +473,7 @@ static void cmd_playfield(int argc, char **argv)
         {
             case 'o': output_filename = optarg; break;
             case_fmt case_field case_data
+            case 'r': reverse = 1; break;
             case 's':
                 pfmask_str = strdup(optarg);
                 for (int i = 0; i < 6; ++i) if (strchr(optarg,'0'+i)) pfmask ^= 1<<i;
@@ -493,6 +501,7 @@ static void cmd_playfield(int argc, char **argv)
         if (field_name) fprintf(output_file, " -n %s", field_name);
         if (output_format != FMT_K65) fprintf(output_file, " -f %s", format_names[output_format]);
         if (pfmask_str) fprintf(output_file, " -s %s", pfmask_str);
+        if (reverse) fprintf(output_file, " -r");
         if (x0 != 0) fprintf(output_file, " -x0 %d", x0); if (x1 != -1) fprintf(output_file, " -x1 %d", x1); if (xi != 1) fprintf(output_file, " -xi %d", xi);
         if (y0 != 0) fprintf(output_file, " -y0 %d", y0); if (y1 != -1) fprintf(output_file, " -y1 %d", y1); if (yi != 1) fprintf(output_file, " -yi %d", yi);
         fprintf(output_file, " %s", input_filename);
@@ -526,8 +535,99 @@ static void cmd_playfield(int argc, char **argv)
     {
         if (!(pfmask & (1<<i))) continue;
         char *fname = get_field_name(input_filename, field_name, "_pf%d", i);
+        if (reverse) for (int j = 0; j < col_h; ++j) PF(i)[j] ^= 0xff;
         write_table(output_file, output_format, fname, PF(i), col_h);
     }
+    CMD_END_WRITE
+}
+
+static void print_usage_scramble(FILE *stream, int exit_code)
+{
+    fprintf(stream, "Generate a scrambled table.\n");
+    fprintf(stream, "Usage: %s scramble options <png>\n", program_name);
+    fprintf(stream,
+        USAGE_HELP USAGE_OUTPUT USAGE_FORMAT USAGE_FIELD USAGE_DATA
+        "  --min <int>          lower bound, inclusive [0]\n"
+        "  --max <int>          higher bound, inclusive [255]\n"
+        "  --seed <int>         random seed\n"
+    );
+    exit(exit_code);
+}
+#define OMIN 0x201
+#define OMAX 0x202
+#define OSEED 0x203
+#define OPT_MIN      { "min",         required_argument, 0,  OMIN }
+#define OPT_MAX      { "max",         required_argument, 0,  OMAX }
+#define OPT_SEED     { "seed",        required_argument, 0,  OSEED }
+#define OPT_REVERSE  { "reverse",     no_argument,       0,  'r' }
+#define case_omin case OMIN: range_min = atoi(optarg); break;
+#define case_omax case OMAX: range_max = atoi(optarg); break;
+#define case_oseed case OSEED: rand_seed = strtoul(optarg, 0, 16); break;
+static void cmd_scramble(int argc, char **argv)
+{
+    const char *const short_options = "ho:f:n:d";
+    const struct option long_options[] = {
+        OPT_HELP, OPT_OUTPUT, OPT_FORMAT, OPT_FIELD, OPT_DATA,
+        OPT_MIN, OPT_MAX, OPT_SEED, OPT_REVERSE,
+        { 0, 0, 0, 0 },
+    };
+    const char *output_filename = 0;
+    format_t output_format = FMT_AUTO;
+    char *field_name = 0;
+    int range_min = 0, range_max=255, rand_seed = 0;
+    int reverse = 0;
+    for (;;)
+    {
+        int next_option = getopt_long_only(argc, argv, short_options, long_options, 0);
+        if (next_option < 0) break;
+        switch (next_option)
+        {
+            case 'o': output_filename = optarg; break;
+            case_fmt case_field case_data
+            case_omin case_omax case_oseed
+            case 'r': reverse = 1; break;
+            case 0: break;
+            case 'h': print_usage_scramble(stdout, EXIT_SUCCESS);
+            case '?': case ':': print_usage_scramble(stderr, EXIT_FAILURE);
+            default: abort();
+        }
+    }
+    get_format(&output_format, output_filename);
+
+    FILE *output_file = stdout;
+    if (output_filename && !(output_file = fopen(output_filename, "wb"))) err("failed to open output %s\n", output_filename);
+    CMD_START_WRITE
+    if (output_format != FMT_BIN)
+    {
+        fprintf(output_file, "scramble");
+        if (s_dataonly) fprintf(output_file, " -d");
+        if (field_name) fprintf(output_file, " -n %s", field_name);
+        if (reverse) fprintf(output_file, " -r");
+        if (output_format != FMT_K65) fprintf(output_file, " -f %s", format_names[output_format]);
+        if (range_min != 0) fprintf(output_file, " --min %d", range_min); if (range_max != 255) fprintf(output_file, " --max %d", range_max);
+        if (rand_seed != 0) fprintf(output_file, " --seed 0x%08X", rand_seed);
+    }
+    int count = range_max - range_min + 1;
+    uint8_t *b = malloc(count);
+    for (int i = 0; i < count; ++i) b[i] = (uint8_t)(i + range_min);
+    if (!rand_seed) rand_seed = getpid() + time(0) * (8 * sizeof(pid_t));
+    srand(rand_seed);
+    for (int i = 0; i < count; ++i)
+    {
+        int j = rand() % (count - i) + i;
+        uint8_t t = b[i]; b[i] = b[j]; b[j] = t;
+    }
+    write_table_start(output_file, output_format, field_name);
+    write_table_data(output_file, output_format, b, count);
+    if (reverse)
+    {
+        uint8_t *p = malloc(count);
+        for (int i = 0; i < count; ++i)
+            p[b[i] - range_min] = i;
+        fprintf(output_file, "\n%s_rev:", field_name);
+        write_table_data(output_file, output_format, p, count);
+    }
+    write_table_end(output_file, output_format);
     CMD_END_WRITE
 }
 
@@ -695,13 +795,14 @@ static void cmd_update(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) print_usage(stderr, EXIT_FAILURE);
     program_name = strdup(argv[0]);
+    if (argc < 2) print_usage(stderr, EXIT_FAILURE);
     const char *program_cmd = argv[1];
     argv[1] = argv[0]; --argc; ++argv;
     if (!strcmp(program_cmd, "authpalette")) cmd_authpalette(argc, argv);
     else if (!strcmp(program_cmd, "linecol")) cmd_linecol(argc, argv);
     else if (!strcmp(program_cmd, "playfield")) cmd_playfield(argc, argv);
+    else if (!strcmp(program_cmd, "scramble")) cmd_scramble(argc, argv);
     else if (!strcmp(program_cmd, "sprite")) cmd_sprite(argc, argv);
     else if (!strcmp(program_cmd, "update")) cmd_update(argc, argv);
     else print_usage(stderr, EXIT_FAILURE);
